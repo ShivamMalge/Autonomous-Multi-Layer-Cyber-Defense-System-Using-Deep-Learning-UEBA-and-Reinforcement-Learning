@@ -1,0 +1,34 @@
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Data (too large for GitHub)
+data/raw/
+data/processed/
+data/features/
+
+# Trained Models (large binary files)
+models/*.pkl
+models/*.pt
+
+# Reports (generated outputs)
+reports/logs/
+reports/figures/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+Thumbs.db
+.DS_Store
