@@ -77,18 +77,10 @@ class EntityStateManager:
 
 
 def apply_alert_optimization_rules(rl_action: int, state_vec: np.ndarray, 
-                                   entity_state: dict, logger) -> tuple[int, str]:
+                                   entity_state: dict, global_alert_ratio: float, logger) -> tuple[int, str]:
     """
     Applies system-level policies to the RL agent's decision.
     Prevents over-aggressive responses by enforcing 'Alert First' and 'Uncertainty Zone' rules.
-    
-    Args:
-        rl_action: Raw decision from DQN (0=Monitor, 1=Alert, 2=Block, 3=Isolate)
-        state_vec: [anomaly_score, user_risk_score, activity_intensity, time_context]
-        entity_state: History struct for this user/IP
-    
-    Returns:
-        (Final Action ID, Justification String)
     """
     anomaly, risk, intensity, time = state_vec
     threat_confidence = (anomaly + risk) / 2.0
@@ -97,21 +89,36 @@ def apply_alert_optimization_rules(rl_action: int, state_vec: np.ndarray,
     if rl_action < 2:
         return rl_action, "RL direct decision"
 
-    # RULE 1: Uncertainty Zone Downgrade
-    # If either signal is in the gray area (0.3 - 0.7), and threat isn't overwhelming
-    in_gray_zone = (0.3 < anomaly < 0.7) or (0.3 < risk < 0.7)
-    
-    if in_gray_zone and threat_confidence < 0.65:
-        # Check if we already alerted them recently and risk is trending up
-        if entity_state['alert_count'] > 0 and risk >= entity_state['last_risk']:
-            return rl_action, "Escalation allowed (prior alert exists)"
-        else:
-            return 1, f"Downgraded to ALERT (Uncertainty zone: anomaly={anomaly:.2f}, risk={risk:.2f})"
+    # RULE 4: Escalation Respect Rule
+    # If we already alerted them, allow Block/Isolate without restriction
+    if entity_state['alert_count'] > 0:
+        return rl_action, "Escalation permitted (Prior alerts exist)"
 
-    # RULE 2: Alert-First Policy (Soft constraint for new entities)
-    # If we haven't alerted them before, and threat isn't severe (>0.85)
-    if entity_state['alert_count'] == 0 and threat_confidence < 0.85:
-        return 1, "Downgraded to ALERT (Alert-First Policy for new entities)"
+    # RULE 2: Confidence-Based Override
+    # High isolated signal allows agent absolute authority
+    if anomaly > 0.75 or risk > 0.75:
+        return rl_action, f"High confidence override (Anomaly={anomaly:.2f}, Risk={risk:.2f})"
+
+    # RULE 5: Cap Alert Ratio
+    downgrade_prob = 0.5
+    if global_alert_ratio > 0.40:
+        downgrade_prob = 0.2  # Reduce downgrades severely if Alert is overused
+
+    # RULE 1 & 3: Probabilistic Uncertainty Zone (0.4 - 0.6)
+    in_gray_zone = (0.4 < anomaly < 0.6) or (0.4 < risk < 0.6)
+    
+    if in_gray_zone:
+        if random.random() < downgrade_prob:
+            return 1, f"Downgraded to ALERT (Probabilistic gray zone: anomaly={anomaly:.2f}, risk={risk:.2f})"
+        else:
+            return rl_action, "RL action preserved in gray zone (Probabilistic pass)"
+
+    # RULE 2 (Secondary): Alert-First Policy (Soft constraint for new entities)
+    if threat_confidence < 0.75:
+        if random.random() < downgrade_prob:
+            return 1, "Downgraded to ALERT (Alert-First Policy for new entities)"
+        else:
+            return rl_action, "RL action preserved (Probabilistic override of Alert-First)"
 
     return rl_action, "RL direct decision (High confidence)"
 
@@ -203,8 +210,12 @@ def main():
             rl_action = rl_agent.select_action(state_vec, training=False)
             
             # 6. System Rules (Alert Optimization)
+            # Calculate current global alert ratio
+            total_actions = sum(stats['final_actions'].values())
+            global_alert_ratio = stats['final_actions'][1] / max(total_actions, 1)
+
             final_action, justification = apply_alert_optimization_rules(
-                rl_action, state_vec, entity_hist, logger
+                rl_action, state_vec, entity_hist, global_alert_ratio, logger
             )
             
             # State Update
